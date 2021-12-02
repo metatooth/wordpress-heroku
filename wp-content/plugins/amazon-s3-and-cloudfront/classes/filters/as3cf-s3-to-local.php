@@ -1,5 +1,7 @@
 <?php
 
+use DeliciousBrains\WP_Offload_Media\Items\Media_Library_Item;
+
 class AS3CF_S3_To_Local extends AS3CF_Filter {
 
 	/**
@@ -20,6 +22,8 @@ class AS3CF_S3_To_Local extends AS3CF_Filter {
 		add_filter( 'as3cf_filter_post_provider_to_local', array( $this, 'filter_post' ) );
 		// Widgets
 		add_filter( 'widget_update_callback', array( $this, 'filter_widget_save' ), 10, 4 );
+		// Srcset handling
+		add_filter( 'wp_image_file_matches_image_meta', array( $this, 'image_file_matches_image_meta' ), 10, 4 );
 	}
 
 	/**
@@ -67,12 +71,14 @@ class AS3CF_S3_To_Local extends AS3CF_Filter {
 	 *
 	 * @return bool
 	 */
-	protected function url_needs_replacing( $url ) {
-		$uploads  = wp_upload_dir();
-		$base_url = AS3CF_Utils::remove_scheme( $uploads['baseurl'] );
+	public function url_needs_replacing( $url ) {
+		if ( str_replace( $this->get_bare_upload_base_urls(), '', $url ) !== $url ) {
+			// Local URL, no replacement needed.
+			return false;
+		}
 
-		if ( false !== strpos( $url, $base_url ) ) {
-			// Local URL, no replacement needed
+		if ( str_replace( $this->get_remote_domains(), '', $url ) === $url ) {
+			// Not a known remote URL, no replacement needed.
 			return false;
 		}
 
@@ -110,73 +116,39 @@ class AS3CF_S3_To_Local extends AS3CF_Filter {
 	 *
 	 * @return bool|int
 	 */
-	protected function get_attachment_id_from_url( $url ) {
-		global $wpdb;
+	public function get_attachment_id_from_url( $url ) {
+		// Result for sized URL already cached in request, return it.
+		if ( isset( $this->query_cache[ $url ] ) ) {
+			return $this->query_cache[ $url ];
+		}
+
+		$post_id = Media_Library_Item::get_source_id_by_remote_url( $url );
+
+		if ( $post_id ) {
+			$this->query_cache[ $url ] = $post_id;
+
+			return $post_id;
+		}
 
 		$full_url = AS3CF_Utils::remove_size_from_filename( $url );
 
+		// If we've already tried to find this URL above because it didn't have a size suffix, cache and return.
+		if ( $url === $full_url ) {
+			$this->query_cache[ $url ] = $post_id;
+
+			return $post_id;
+		}
+
+		// Result for URL already cached in request whether found or not, return it.
 		if ( isset( $this->query_cache[ $full_url ] ) ) {
-			// ID already cached, return
 			return $this->query_cache[ $full_url ];
 		}
 
-		$parts = AS3CF_Utils::parse_url( $full_url );
-		$path  = $this->as3cf->decode_filename_in_path( ltrim( $parts['path'], '/' ) );
+		$post_id = Media_Library_Item::get_source_id_by_remote_url( $full_url );
 
-		if ( false !== strpos( $path, '/' ) ) {
-			// Remove the first directory to cater for bucket in path domain settings
-			$path = explode( '/', $path );
-			array_shift( $path );
-			$path = implode( '/', $path );
-		}
+		$this->query_cache[ $full_url ] = $post_id;
 
-		$sql = $wpdb->prepare( "
- 				SELECT * FROM {$wpdb->postmeta}
- 				WHERE meta_key = %s
- 				AND meta_value LIKE %s;
- 			", 'amazonS3_info', '%' . $path . '%' );
-
-		$results = $wpdb->get_results( $sql );
-
-		if ( empty( $results ) ) {
-			// No attachment found, return false
-			return false;
-		}
-
-		if ( 1 === count( $results ) ) {
-			// Attachment matched, return ID
-			$this->query_cache[ $full_url ] = $results[0]->post_id;
-
-			return $results[0]->post_id;
-		}
-
-		$path = ltrim( $parts['path'], '/' );
-
-		foreach ( $results as $result ) {
-			$meta = maybe_unserialize( $result->meta_value );
-
-			if ( ! isset( $meta['bucket'] ) || ! isset( $meta['key'] ) ) {
-				// Can't determine S3 bucket or key, continue
-				continue;
-			}
-
-			if ( false !== strpos( $path, $meta['bucket'] ) ) {
-				// Bucket in path, remove
-				$path = ltrim( str_replace( $meta['bucket'], '', $path ), '/' );
-			}
-
-			if ( $path === $meta['key'] ) {
-				// Exact match, return ID
-				$this->query_cache[ $full_url ] = $results[0]->post_id;
-
-				return $result->post_id;
-			}
-		}
-
-		// Can't determine ID, return false
-		$this->query_cache[ $full_url ] = false;
-
-		return false;
+		return $post_id;
 	}
 
 	/**
@@ -212,7 +184,7 @@ class AS3CF_S3_To_Local extends AS3CF_Filter {
 	 * @return string
 	 */
 	protected function normalize_find_value( $url ) {
-		return $this->as3cf->encode_filename_in_path( $url );
+		return AS3CF_Utils::encode_filename_in_path( $url );
 	}
 
 	/**
@@ -223,7 +195,7 @@ class AS3CF_S3_To_Local extends AS3CF_Filter {
 	 * @return string
 	 */
 	protected function normalize_replace_value( $url ) {
-		return $this->as3cf->decode_filename_in_path( $url );
+		return AS3CF_Utils::decode_filename_in_path( $url );
 	}
 
 	/**
@@ -246,5 +218,26 @@ class AS3CF_S3_To_Local extends AS3CF_Filter {
 	 */
 	protected function pre_replace_content( $content ) {
 		return $content;
+	}
+
+	/**
+	 * Determines if the image meta data is for the image source file.
+	 *
+	 * @handles wp_image_file_matches_image_meta
+	 *
+	 * @param bool   $match
+	 * @param string $image_location
+	 * @param array  $image_meta
+	 * @param int    $attachment_id
+	 *
+	 * @return bool
+	 */
+	public function image_file_matches_image_meta( $match, $image_location, $image_meta, $attachment_id ) {
+		// If already matched or the URL is local, there's nothing for us to do.
+		if ( $match || ! $this->url_needs_replacing( $image_location ) ) {
+			return $match;
+		}
+
+		return $this->attachment_id_matches_src( $attachment_id, $image_location );
 	}
 }

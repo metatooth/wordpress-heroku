@@ -5,12 +5,14 @@
  * Description: A simple CSS and SVG driven social icons widget.
  * Author: StudioPress
  * Author URI: https://www.studiopress.com/
- * Version: 3.0.1
+ * Version: 3.0.2
  * Text Domain: simple-social-icons
  * Domain Path: /languages
  *
  * License: GNU General Public License v2.0 (or later)
  * License URI: https://www.opensource.org/licenses/gpl-license.php
+ * 
+ * @package simple-social-icons
  */
 
 add_action( 'plugins_loaded', 'simple_social_icons_load_textdomain' );
@@ -28,7 +30,7 @@ class Simple_Social_Icons_Widget extends WP_Widget {
 	 *
 	 * @var string
 	 */
-	protected $version = '3.0.1';
+	protected $version = '3.0.2';
 
 	/**
 	 * Default widget values.
@@ -564,7 +566,7 @@ class Simple_Social_Icons_Widget extends WP_Widget {
 		$markup = '<li class="ssi-' . $icon . '"><a href="%s" %s>';
 		$markup .= '<svg role="img" class="social-' . $icon . '" aria-labelledby="social-' . $icon . '-{WIDGET_INSTANCE_ID}">';
 		$markup .= '<title id="social-' . $icon . '-{WIDGET_INSTANCE_ID}' . '">' . $label . '</title>';
-		$markup .= '<use xlink:href="' . esc_url( plugin_dir_url( __FILE__ ) . 'symbol-defs.svg#social-' . $icon ) . '"></use>';
+		$markup .= '<use xlink:href="' . esc_attr( plugin_dir_url( __FILE__ ) . 'symbol-defs.svg#social-' . $icon ) . '"></use>';
 		$markup .= '</svg></a></li>';
 
 		/**
